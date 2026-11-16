@@ -1,0 +1,2250 @@
+# Revision Summary
+# 1. Each report is now linked to a street through the required street_id in FloodReport and POST /reports.
+# 2. Flood severity, observation time and report status are defined in FloodSeverity, FloodReport.observed_at and ReportStatus.
+# 3. The street's overall flood status is now computed from reports in Street.flood_status (StreetFloodStatus) instead of being edited directly.
+# 4. Owners can edit or delete only their pending reports, admins can edit, delete and verify any report, and reports stop counting 6 hours after observed_at (PATCH and DELETE /reports/{id}, PATCH /reports/{id}/verification).
+# 5. The drainage estimate and its related routes were removed on instructor advice, so no drainage routes remain.
+# 6. Bypasses are described as suggestions that include last_updated and never claim a street is safe (GET /streets/{id}/bypasses).
+# 7. The missing components section was added, containing all schemas, parameters, responses and the bearerAuth security scheme.
+# 8. Every operation now has tags, a summary, defined inputs, and 2xx and 4xx responses with schemas.
+# 9. The scope was limited to 5 flood-prone areas, with /coverage-areas and /assistance-requests added as core resources.
+
+openapi: 3.0.3
+info:
+  title: FloodFlow CDO API
+  version: 2.0.0
+  description: |
+    **FloodFlow CDO**, a community flood alert system for Cagayan de Oro.
+    Commuters and barangay officials submit flood reports for streets, admins verify them,
+    the API derives each street's current flood status from recent reports, suggests bypass streets,
+    publishes rain advisories, and lets residents request assistance.
+
+    
+    The system only covers flood-prone areas identified for the city. Each coverage area is one barangay and records its `district`. 
+
+    ##### **Note**:
+    - We removed drainage observation and drainage estimate due to instructor suggestion.
+    - We will only limit 5 flood prone-areas. Not the whole city. Due to instructor suggestion also.
+
+     **Group MojoGojo** (ITCC 14): Mark Dichos (Leader), Andrei Nacaya, Denz Macasero, Dann Roa.
+    
+  contact:
+    name: MojoGojo - ITCC 14
+  servers:
+    URL: http://localhost:3000/api
+tags:
+  - name: Auth
+    description: Registration and login. Owner - Mark Dichos.
+  - name: Users
+    description: User accounts and role management. Owner - Mark Dichos.
+  - name: Coverage Areas
+    description: Barangays or districts that group streets, advisories and users. Owner - Dann Roa.
+  - name: Streets
+    description: Street records, report-based flood status and bypass suggestions. Owner - Andrei Nacaya.
+  - name: Reports
+    description: Flood reports and their verification (main resource). Owner - Andrei Nacaya.
+  - name: Advisories
+    description: Admin-posted rain advisories and evacuation warnings. Owner - Denz Macasero.
+  - name: Assistance Requests
+    description: Requests for rescue, evacuation, medical help or supplies. Owner - Denz Macasero.
+security:
+  - bearerAuth: []
+paths:
+  # ---------------------------------------------------------------- AUTH
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: Register a new commuter account
+      description: >-
+        Creates a user with the `commuter` role. Admin accounts are created by promoting an existing
+        user through `PUT /users/{id}`.
+      operationId: registerUser
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+            example:
+              name: Mark Dichos
+              email: mark@example.com
+              password: example-password-123
+              coverage_area_id: 1
+      responses:
+        '201':
+          description: Account created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+              example:
+                token: <jwt-token>
+                user:
+                  id: 12
+                  name: Mark Dichos
+                  email: mark@example.com
+                  role: commuter
+                  coverage_area_id: 1
+                  created_at: '2026-11-03T09:30:00Z'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Log in and receive a JWT
+      operationId: loginUser
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            example:
+              email: mark@example.com
+              password: example-password-123
+      responses:
+        '200':
+          description: Login successful.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+              example:
+                token: <jwt-token>
+                user:
+                  id: 12
+                  name: Mark Dichos
+                  email: mark@example.com
+                  role: commuter
+                  coverage_area_id: 1
+                  created_at: '2026-11-03T09:30:00Z'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          description: Wrong email or password.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                status: 401
+                error: Unauthorized
+                message: Invalid email or password.
+  # --------------------------------------------------------------- USERS
+  /users:
+    get:
+      tags: [Users]
+      summary: List all users (admin)
+      operationId: listUsers
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+        - name: role
+          in: query
+          description: Filter by role.
+          schema:
+            $ref: '#/components/schemas/Role'
+        - name: coverage_area_id
+          in: query
+          description: Filter by the user's coverage area.
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        '200':
+          description: A page of users.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/User'
+              example:
+                - id: 12
+                  name: Mark Dichos
+                  email: mark@example.com
+                  role: commuter
+                  coverage_area_id: 1
+                  created_at: '2026-11-03T09:30:00Z'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /users/me:
+    get:
+      tags: [Users]
+      summary: Get the logged-in user's profile
+      operationId: getMyProfile
+      responses:
+        '200':
+          description: The current user.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+              example:
+                id: 12
+                name: Mark Dichos
+                email: mark@example.com
+                role: commuter
+                coverage_area_id: 1
+                created_at: '2026-11-03T09:30:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    put:
+      tags: [Users]
+      summary: Update the logged-in user's profile
+      description: Users cannot change their own role. Use `PUT /users/{id}` (admin) for that.
+      operationId: updateMyProfile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserUpdate'
+            example:
+              name: Mark D.
+              email: mark@example.com
+              coverage_area_id: 2
+      responses:
+        '200':
+          description: Profile updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+              example:
+                id: 12
+                name: Mark D.
+                email: mark@example.com
+                role: commuter
+                coverage_area_id: 2
+                created_at: '2026-11-03T09:30:00Z'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /users/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [Users]
+      summary: Get a user by id (admin)
+      operationId: getUser
+      responses:
+        '200':
+          description: The user.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+              example:
+                id: 12
+                name: Mark Dichos
+                email: mark@example.com
+                role: commuter
+                coverage_area_id: 1
+                created_at: '2026-11-03T09:30:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Users]
+      summary: Update a user, including their role (admin)
+      description: An admin cannot remove their own admin role (returns 409) so the system always keeps at least one admin.
+      operationId: updateUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserAdminUpdate'
+            example:
+              name: Maria Loiza
+              email: maria@barangay-carmen.example
+              role: admin
+              coverage_area_id: 1
+      responses:
+        '200':
+          description: User updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+              example:
+                id: 15
+                name: Maria Loiza
+                email: maria@barangay-carmen.example
+                role: admin
+                coverage_area_id: 1
+                created_at: '2026-11-04T08:00:00Z'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+    delete:
+      tags: [Users]
+      summary: Delete a user (admin)
+      description: |
+        Effect on related records:
+        * Their flood reports are **kept** but `reporter_id` becomes `null` so street status stays accurate.
+        * Their `open` assistance requests are set to `cancelled`; other requests are kept with `requester_id` set to `null`.
+        * Advisories they created are kept (`created_by` becomes `null`).
+        An admin cannot delete their own account (409).
+      operationId: deleteUser
+      responses:
+        '204':
+          description: User deleted. No body.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  # ------------------------------------------------------ COVERAGE AREAS
+  /coverage-areas:
+    get:
+      tags: [Coverage Areas]
+      summary: List coverage areas
+      description: Any logged-in user can read. Inactive areas are hidden unless `include_inactive=true` (admin only).
+      operationId: listCoverageAreas
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+        - name: district
+          in: query
+          description: Only areas in this district.
+          schema:
+            $ref: '#/components/schemas/District'
+        - name: is_coastal_riverfront
+          in: query
+          description: Only coastal/riverfront zones when true.
+          schema:
+            type: boolean
+        - name: include_inactive
+          in: query
+          description: Include inactive areas. Ignored for commuters.
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: A page of coverage areas.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CoverageArea'
+              example:
+                - id: 1
+                  name: Carmen
+                  barangay: Carmen
+                  city: Cagayan de Oro
+                  district: first_district
+                  is_coastal_riverfront: true
+                  description: Low-lying area near the Cagayan River.
+                  is_active: true
+                  created_at: '2026-11-01T08:00:00Z'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Coverage Areas]
+      summary: Create a coverage area (admin)
+      description: >-
+        Only flood-prone barangays listed in the API scope (see `info.description`) should be added.
+        The same barangay cannot be added twice (409).
+      operationId: createCoverageArea
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CoverageAreaInput'
+            example:
+              name: Carmen
+              barangay: Carmen
+              city: Cagayan de Oro
+              district: first_district
+              is_coastal_riverfront: true
+              description: Low-lying area near the Cagayan River.
+              is_active: true
+      responses:
+        '201':
+          description: Coverage area created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CoverageArea'
+              example:
+                id: 1
+                name: Carmen
+                barangay: Carmen
+                city: Cagayan de Oro
+                district: first_district
+                is_coastal_riverfront: true
+                description: Low-lying area near the Cagayan River.
+                is_active: true
+                created_at: '2026-11-01T08:00:00Z'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /coverage-areas/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [Coverage Areas]
+      summary: Get a coverage area by id
+      operationId: getCoverageArea
+      responses:
+        '200':
+          description: The coverage area.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CoverageArea'
+              example:
+                id: 1
+                name: Carmen
+                barangay: Carmen
+                city: Cagayan de Oro
+                district: first_district
+                is_coastal_riverfront: true
+                description: Low-lying area near the Cagayan River.
+                is_active: true
+                created_at: '2026-11-01T08:00:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Coverage Areas]
+      summary: Replace a coverage area (admin)
+      description: >-
+        Full update. Setting `is_active` to false hides the area from commuters but keeps its streets,
+        reports and advisories.
+      operationId: updateCoverageArea
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CoverageAreaInput'
+            example:
+              name: Carmen
+              barangay: Carmen
+              city: Cagayan de Oro
+              district: first_district
+              is_coastal_riverfront: true
+              description: Updated description.
+              is_active: true
+      responses:
+        '200':
+          description: Coverage area updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CoverageArea'
+              example:
+                id: 1
+                name: Carmen
+                barangay: Carmen
+                city: Cagayan de Oro
+                district: first_district
+                is_coastal_riverfront: true
+                description: Updated description.
+                is_active: true
+                created_at: '2026-11-01T08:00:00Z'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+    delete:
+      tags: [Coverage Areas]
+      summary: Delete a coverage area (admin)
+      description: >-
+        Returns 409 if any street still belongs to the area (deactivate it with PUT instead).
+        If only users or advisories reference it, their `coverage_area_id` is set to `null`
+        (advisories with `null` are city-wide).
+      operationId: deleteCoverageArea
+      responses:
+        '204':
+          description: Coverage area deleted. No body.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  # ------------------------------------------------------------ STREETS
+  /streets:
+    get:
+      tags: [Streets]
+      summary: List streets with their current flood status
+      description: Each street includes the computed `flood_status`. Inactive streets are hidden from commuters.
+      operationId: listStreets
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+        - name: coverage_area_id
+          in: query
+          description: Only streets in this coverage area.
+          schema:
+            type: integer
+            minimum: 1
+        - name: q
+          in: query
+          description: Case-insensitive search on the street name.
+          schema:
+            type: string
+            maxLength: 100
+        - name: flood_level
+          in: query
+          description: Only streets whose current flood status level matches.
+          schema:
+            $ref: '#/components/schemas/FloodLevel'
+      responses:
+        '200':
+          description: A page of streets.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Street'
+              example:
+                - id: 7
+                  name: Villarin Street
+                  coverage_area_id: 1
+                  latitude: 8.4906
+                  longitude: 124.6445
+                  connected_street_ids: [8, 9]
+                  is_active: true
+                  flood_status:
+                    level: moderate
+                    active_report_count: 3
+                    verified_report_count: 1
+                    last_updated: '2026-11-03T09:10:00Z'
+                    computed_at: '2026-11-03T09:30:00Z'
+                    note: Based on 3 reports from the last 6 hours. This is not a safety guarantee.
+                  created_at: '2026-11-01T08:00:00Z'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Streets]
+      summary: Create a street record (admin)
+      description: >-
+        The street must belong to an active coverage area (404 if it does not exist, 409 if it is inactive).
+      operationId: createStreet
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StreetCreate'
+            example:
+              name: Villarin Street
+              coverage_area_id: 1
+              latitude: 8.4906
+              longitude: 124.6445
+              connected_street_ids: [8, 9]
+      responses:
+        '201':
+          description: Street created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Street'
+              example:
+                id: 7
+                name: Villarin Street
+                coverage_area_id: 1
+                latitude: 8.4906
+                longitude: 124.6445
+                connected_street_ids: [8, 9]
+                is_active: true
+                flood_status:
+                  level: no_recent_reports
+                  active_report_count: 0
+                  verified_report_count: 0
+                  last_updated: null
+                  computed_at: '2026-11-01T08:00:00Z'
+                  note: No reports in the last 6 hours. This does not mean the street is safe.
+                created_at: '2026-11-01T08:00:00Z'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /streets/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [Streets]
+      summary: Get a street and its current flood status
+      operationId: getStreet
+      responses:
+        '200':
+          description: The street.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Street'
+              example:
+                id: 7
+                name: Villarin Street
+                coverage_area_id: 1
+                latitude: 8.4906
+                longitude: 124.6445
+                connected_street_ids: [8, 9]
+                is_active: true
+                flood_status:
+                  level: moderate
+                  active_report_count: 3
+                  verified_report_count: 1
+                  last_updated: '2026-11-03T09:10:00Z'
+                  computed_at: '2026-11-03T09:30:00Z'
+                  note: Based on 3 reports from the last 6 hours. This is not a safety guarantee.
+                created_at: '2026-11-01T08:00:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Streets]
+      summary: Update a street record (admin)
+      description: >-
+        Partial update of name, location, connections, area or `is_active`. `flood_status` cannot be set here.
+        Moving a street to another coverage area does not change its existing reports.
+      operationId: updateStreet
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StreetUpdate'
+            example:
+              name: Villarin Street (Carmen)
+              is_active: true
+      responses:
+        '200':
+          description: Street updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Street'
+              example:
+                id: 7
+                name: Villarin Street (Carmen)
+                coverage_area_id: 1
+                latitude: 8.4906
+                longitude: 124.6445
+                connected_street_ids: [8, 9]
+                is_active: true
+                flood_status:
+                  level: no_recent_reports
+                  active_report_count: 0
+                  verified_report_count: 0
+                  last_updated: null
+                  computed_at: '2026-11-03T10:00:00Z'
+                  note: No reports in the last 6 hours. This does not mean the street is safe.
+                created_at: '2026-11-01T08:00:00Z'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+    delete:
+      tags: [Streets]
+      summary: Delete a street (admin)
+      description: >-
+        Returns 409 if the street has any flood reports or assistance requests (set `is_active` to false with PATCH instead,
+        so history is preserved). The street is also removed from other streets' `connected_street_ids`.
+      operationId: deleteStreet
+      responses:
+        '204':
+          description: Street deleted. No body.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /streets/{id}/bypasses:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [Streets]
+      summary: Get suggested bypass streets
+      description: |
+        Returns **suggestions only**, built from reports currently available. Candidates are active streets listed in the
+        street's `connected_street_ids`. Candidates whose level is `high` or `severe` are excluded. The rest are ordered:
+        `clear`, then `low`, then `moderate`, then `no_recent_reports`. Each suggestion shows when its information was last
+        updated. A street is never described as "safe", and `no_recent_reports` means unknown, not safe.
+        Returns an empty list when no suggestion can be made.
+      operationId: getStreetBypasses
+      responses:
+        '200':
+          description: Bypass suggestions (possibly empty).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BypassSuggestionList'
+              example:
+                street_id: 7
+                computed_at: '2026-11-03T09:30:00Z'
+                disclaimer: Suggestions are based on recent community reports and may be outdated. Check conditions yourself before travelling.
+                suggestions:
+                  - street_id: 8
+                    name: Max Suniel Street
+                    level: low
+                    active_report_count: 1
+                    last_updated: '2026-11-03T09:00:00Z'
+                    note: Based on 1 report from the last 6 hours.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  # ------------------------------------------------------------ REPORTS
+  /reports:
+    get:
+      tags: [Reports]
+      summary: List flood reports
+      description: |
+        By default returns **active** reports (not expired, not rejected). Commuters also see their own rejected reports.
+        Admins can see everything with `active=false` or by filtering `status`.
+      operationId: listReports
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+        - name: street_id
+          in: query
+          description: Only reports for this street.
+          schema:
+            type: integer
+            minimum: 1
+        - name: coverage_area_id
+          in: query
+          description: Only reports for streets in this coverage area.
+          schema:
+            type: integer
+            minimum: 1
+        - name: status
+          in: query
+          description: Filter by report status.
+          schema:
+            $ref: '#/components/schemas/ReportStatus'
+        - name: severity
+          in: query
+          description: Filter by severity.
+          schema:
+            $ref: '#/components/schemas/FloodSeverity'
+        - name: active
+          in: query
+          description: When true (default) only reports that still influence street status; false includes expired ones.
+          schema:
+            type: boolean
+            default: true
+        - name: mine
+          in: query
+          description: Only reports submitted by the logged-in user.
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: A page of reports, newest `observed_at` first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/FloodReport'
+              example:
+                - id: 101
+                  street_id: 7
+                  reporter_id: 12
+                  severity: moderate
+                  description: Knee-deep near the school gate.
+                  observed_at: '2026-11-03T09:10:00Z'
+                  expires_at: '2026-11-03T15:10:00Z'
+                  is_active: true
+                  status: pending
+                  verified_by: null
+                  verified_at: null
+                  verification_reason: null
+                  resolved_at: null
+                  created_at: '2026-11-03T09:12:00Z'
+                  updated_at: '2026-11-03T09:12:00Z'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Reports]
+      summary: Submit a flood report for a street
+      description: >-
+        Creates a `pending` report owned by the logged-in user. The street must exist and be active.
+        The street's `flood_status` is recalculated immediately.
+      operationId: createReport
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FloodReportCreate'
+            example:
+              street_id: 7
+              severity: moderate
+              description: Knee-deep near the school gate.
+              observed_at: '2026-11-03T09:10:00Z'
+      responses:
+        '201':
+          description: Report created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FloodReport'
+              example:
+                id: 101
+                street_id: 7
+                reporter_id: 12
+                severity: moderate
+                description: Knee-deep near the school gate.
+                observed_at: '2026-11-03T09:10:00Z'
+                expires_at: '2026-11-03T15:10:00Z'
+                is_active: true
+                status: pending
+                verified_by: null
+                verified_at: null
+                verification_reason: null
+                resolved_at: null
+                created_at: '2026-11-03T09:12:00Z'
+                updated_at: '2026-11-03T09:12:00Z'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /reports/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [Reports]
+      summary: Get a flood report by id
+      description: Commuters can read any non-rejected report and their own rejected reports. Admins can read all.
+      operationId: getReport
+      responses:
+        '200':
+          description: The report.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FloodReport'
+              example:
+                id: 101
+                street_id: 7
+                reporter_id: 12
+                severity: moderate
+                description: Knee-deep near the school gate.
+                observed_at: '2026-11-03T09:10:00Z'
+                expires_at: '2026-11-03T15:10:00Z'
+                is_active: true
+                status: verified
+                verified_by: 15
+                verified_at: '2026-11-03T09:20:00Z'
+                verification_reason: Confirmed by barangay tanod.
+                resolved_at: null
+                created_at: '2026-11-03T09:12:00Z'
+                updated_at: '2026-11-03T09:20:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Reports]
+      summary: Edit a report or mark it resolved
+      description: |
+        **Who can edit**
+        * The owner may change `severity`, `description` and `observed_at` **only while the report is `pending`** (otherwise 403).
+        * The owner may set `status` to `resolved` while the report is `pending` or `verified`.
+        * Admins may edit any report in any status.
+        * `street_id`, `reporter_id` and the verification fields cannot be changed here. To correct a wrong street, delete the report and create a new one.
+        * `status` accepts only `resolved` here. Use `PATCH /reports/{id}/verification` for `verified` and `rejected`.
+        * Rejected and already resolved reports cannot be marked resolved (409).
+
+        The street's `flood_status` is recalculated after every change.
+      operationId: updateReport
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FloodReportUpdate'
+            example:
+              severity: high
+              description: Water is now waist-deep.
+      responses:
+        '200':
+          description: Report updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FloodReport'
+              example:
+                id: 101
+                street_id: 7
+                reporter_id: 12
+                severity: high
+                description: Water is now waist-deep.
+                observed_at: '2026-11-03T09:10:00Z'
+                expires_at: '2026-11-03T15:10:00Z'
+                is_active: true
+                status: pending
+                verified_by: null
+                verified_at: null
+                verification_reason: null
+                resolved_at: null
+                created_at: '2026-11-03T09:12:00Z'
+                updated_at: '2026-11-03T09:40:00Z'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+    delete:
+      tags: [Reports]
+      summary: Delete a flood report
+      description: >-
+        The owner may delete only their own `pending` report (otherwise 403). Admins may delete any report.
+        The street's `flood_status` is recalculated after deletion. Assistance requests that referenced the report keep
+        existing, with `report_id` set to `null`.
+      operationId: deleteReport
+      responses:
+        '204':
+          description: Report deleted. No body.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /reports/{id}/verification:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    patch:
+      tags: [Reports]
+      summary: Verify or reject a report (admin)
+      description: |
+        Admin only. Allowed transitions: `pending` -> `verified` or `rejected`; `verified` -> `rejected` and
+        `rejected` -> `verified` (corrections). A `resolved` report cannot be verified or rejected (409).
+        `reason` is required when rejecting. A rejected report stops influencing the street's `flood_status`.
+        The admin's id and the time are stored in `verified_by` and `verified_at`.
+      operationId: verifyReport
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReportVerification'
+            example:
+              decision: rejected
+              reason: Photo shows a different street.
+      responses:
+        '200':
+          description: Verification recorded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FloodReport'
+              example:
+                id: 101
+                street_id: 7
+                reporter_id: 12
+                severity: moderate
+                description: Knee-deep near the school gate.
+                observed_at: '2026-11-03T09:10:00Z'
+                expires_at: '2026-11-03T15:10:00Z'
+                is_active: false
+                status: rejected
+                verified_by: 15
+                verified_at: '2026-11-03T09:25:00Z'
+                verification_reason: Photo shows a different street.
+                resolved_at: null
+                created_at: '2026-11-03T09:12:00Z'
+                updated_at: '2026-11-03T09:25:00Z'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  # --------------------------------------------------------- ADVISORIES
+  /advisories:
+    get:
+      tags: [Advisories]
+      summary: List advisories
+      description: >-
+        Returns advisories that are currently active (`starts_at` <= now < `expires_at`), newest first. Admins can
+        set `include_expired=true` to see past and scheduled advisories.
+      operationId: listAdvisories
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+        - name: coverage_area_id
+          in: query
+          description: Advisories for this area, plus city-wide ones (`coverage_area_id` null).
+          schema:
+            type: integer
+            minimum: 1
+        - name: advisory_type
+          in: query
+          description: Filter by type.
+          schema:
+            $ref: '#/components/schemas/AdvisoryType'
+        - name: include_expired
+          in: query
+          description: Include expired and scheduled advisories. Ignored for commuters.
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: A page of advisories.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Advisory'
+              example:
+                - id: 3
+                  title: Heavy rain expected tonight
+                  message: Residents near the river should prepare to move valuables to higher ground.
+                  advisory_type: rain
+                  level: warning
+                  coverage_area_id: 1
+                  created_by: 15
+                  starts_at: '2026-11-03T12:00:00Z'
+                  expires_at: '2026-11-04T00:00:00Z'
+                  is_active: true
+                  created_at: '2026-11-03T08:00:00Z'
+                  updated_at: '2026-11-03T08:00:00Z'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Advisories]
+      summary: Post an advisory (admin)
+      operationId: createAdvisory
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdvisoryCreate'
+            example:
+              title: Heavy rain expected tonight
+              message: Residents near the river should prepare to move valuables to higher ground.
+              advisory_type: rain
+              level: warning
+              coverage_area_id: 1
+              starts_at: '2026-11-03T12:00:00Z'
+              expires_at: '2026-11-04T00:00:00Z'
+      responses:
+        '201':
+          description: Advisory created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Advisory'
+              example:
+                id: 3
+                title: Heavy rain expected tonight
+                message: Residents near the river should prepare to move valuables to higher ground.
+                advisory_type: rain
+                level: warning
+                coverage_area_id: 1
+                created_by: 15
+                starts_at: '2026-11-03T12:00:00Z'
+                expires_at: '2026-11-04T00:00:00Z'
+                is_active: false
+                created_at: '2026-11-03T08:00:00Z'
+                updated_at: '2026-11-03T08:00:00Z'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /advisories/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [Advisories]
+      summary: Get an advisory by id
+      description: Commuters can only read advisories that are currently active (otherwise 404). Admins can read any.
+      operationId: getAdvisory
+      responses:
+        '200':
+          description: The advisory.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Advisory'
+              example:
+                id: 3
+                title: Heavy rain expected tonight
+                message: Residents near the river should prepare to move valuables to higher ground.
+                advisory_type: rain
+                level: warning
+                coverage_area_id: 1
+                created_by: 15
+                starts_at: '2026-11-03T12:00:00Z'
+                expires_at: '2026-11-04T00:00:00Z'
+                is_active: true
+                created_at: '2026-11-03T08:00:00Z'
+                updated_at: '2026-11-03T08:00:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Advisories]
+      summary: Update an advisory (admin)
+      description: >-
+        Partial update. To end an advisory early, set `expires_at` to the current time. `expires_at` must stay later
+        than `starts_at`.
+      operationId: updateAdvisory
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdvisoryUpdate'
+            example:
+              level: critical
+              message: Evacuate low-lying houses near the river now.
+      responses:
+        '200':
+          description: Advisory updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Advisory'
+              example:
+                id: 3
+                title: Heavy rain expected tonight
+                message: Evacuate low-lying houses near the river now.
+                advisory_type: rain
+                level: critical
+                coverage_area_id: 1
+                created_by: 15
+                starts_at: '2026-11-03T12:00:00Z'
+                expires_at: '2026-11-04T00:00:00Z'
+                is_active: true
+                created_at: '2026-11-03T08:00:00Z'
+                updated_at: '2026-11-03T13:00:00Z'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Advisories]
+      summary: Delete an advisory (admin)
+      description: Permanently removes the advisory. Prefer ending it early with PATCH when a history is useful.
+      operationId: deleteAdvisory
+      responses:
+        '204':
+          description: Advisory deleted. No body.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  # ------------------------------------------------ ASSISTANCE REQUESTS
+  /assistance-requests:
+    get:
+      tags: [Assistance Requests]
+      summary: List assistance requests
+      description: Commuters see only their own requests. Admins see all and can filter.
+      operationId: listAssistanceRequests
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+        - name: status
+          in: query
+          description: Filter by status.
+          schema:
+            $ref: '#/components/schemas/AssistanceStatus'
+        - name: request_type
+          in: query
+          description: Filter by request type.
+          schema:
+            $ref: '#/components/schemas/AssistanceType'
+        - name: coverage_area_id
+          in: query
+          description: Only requests from streets in this area (admin only; ignored for commuters).
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        '200':
+          description: A page of assistance requests, newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AssistanceRequest'
+              example:
+                - id: 21
+                  requester_id: 12
+                  street_id: 7
+                  coverage_area_id: 1
+                  report_id: 101
+                  request_type: evacuation
+                  description: Elderly resident cannot leave the house, water is entering.
+                  contact_number: '09170000000'
+                  number_of_people: 2
+                  status: open
+                  status_note: null
+                  handled_by: null
+                  created_at: '2026-11-03T09:45:00Z'
+                  updated_at: '2026-11-03T09:45:00Z'
+                  resolved_at: null
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Assistance Requests]
+      summary: Create an assistance request
+      description: >-
+        Creates an `open` request owned by the logged-in user. The street must exist; `coverage_area_id` is taken from the street.
+        If `report_id` is given it must be a report on the same street. This API is not a replacement for emergency hotlines.
+      operationId: createAssistanceRequest
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssistanceRequestCreate'
+            example:
+              street_id: 7
+              report_id: 101
+              request_type: evacuation
+              description: Elderly resident cannot leave the house, water is entering.
+              contact_number: '09170000000'
+              number_of_people: 2
+      responses:
+        '201':
+          description: Request created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssistanceRequest'
+              example:
+                id: 21
+                requester_id: 12
+                street_id: 7
+                coverage_area_id: 1
+                report_id: 101
+                request_type: evacuation
+                description: Elderly resident cannot leave the house, water is entering.
+                contact_number: '09170000000'
+                number_of_people: 2
+                status: open
+                status_note: null
+                handled_by: null
+                created_at: '2026-11-03T09:45:00Z'
+                updated_at: '2026-11-03T09:45:00Z'
+                resolved_at: null
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /assistance-requests/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [Assistance Requests]
+      summary: Get an assistance request by id
+      description: Commuters can read only their own requests (others return 404). Admins can read all.
+      operationId: getAssistanceRequest
+      responses:
+        '200':
+          description: The request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssistanceRequest'
+              example:
+                id: 21
+                requester_id: 12
+                street_id: 7
+                coverage_area_id: 1
+                report_id: 101
+                request_type: evacuation
+                description: Elderly resident cannot leave the house, water is entering.
+                contact_number: '09170000000'
+                number_of_people: 2
+                status: acknowledged
+                status_note: Rescue team dispatched.
+                handled_by: 15
+                created_at: '2026-11-03T09:45:00Z'
+                updated_at: '2026-11-03T09:50:00Z'
+                resolved_at: null
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Assistance Requests]
+      summary: Edit the details of an assistance request
+      description: >-
+        The owner may edit `request_type`, `description`, `contact_number` and `number_of_people` **only while the
+        status is `open`** (otherwise 409). Admins may edit details in any non-terminal status. `status`, `street_id` and
+        ownership cannot be changed here; use `PATCH /assistance-requests/{id}/status` for status changes.
+      operationId: updateAssistanceRequest
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssistanceRequestUpdate'
+            example:
+              number_of_people: 3
+              description: Three residents including an elderly person need to be moved.
+      responses:
+        '200':
+          description: Request updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssistanceRequest'
+              example:
+                id: 21
+                requester_id: 12
+                street_id: 7
+                coverage_area_id: 1
+                report_id: 101
+                request_type: evacuation
+                description: Three residents including an elderly person need to be moved.
+                contact_number: '09170000000'
+                number_of_people: 3
+                status: open
+                status_note: null
+                handled_by: null
+                created_at: '2026-11-03T09:45:00Z'
+                updated_at: '2026-11-03T09:47:00Z'
+                resolved_at: null
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+    delete:
+      tags: [Assistance Requests]
+      summary: Delete an assistance request
+      description: >-
+        The owner may delete their own request only when its status is `open` or `cancelled` (otherwise 409).
+        Admins may delete any request, for example to clean up resolved or cancelled records.
+      operationId: deleteAssistanceRequest
+      responses:
+        '204':
+          description: Request deleted. No body.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /assistance-requests/{id}/status:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    patch:
+      tags: [Assistance Requests]
+      summary: Change the status of an assistance request
+      description: |
+        Allowed transitions: `open` -> `acknowledged` -> `in_progress` -> `resolved`; and `open`, `acknowledged` or
+        `in_progress` -> `cancelled`. `resolved` and `cancelled` are final (409 on any further change). Statuses cannot go backward.
+        * **Admins** may make any allowed transition. Their id is stored in `handled_by`; `resolved_at` is set on `resolved`.
+        * **The owner** may only set `cancelled` (otherwise 403).
+      operationId: changeAssistanceRequestStatus
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssistanceStatusChange'
+            example:
+              status: acknowledged
+              status_note: Rescue team dispatched.
+      responses:
+        '200':
+          description: Status changed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssistanceRequest'
+              example:
+                id: 21
+                requester_id: 12
+                street_id: 7
+                coverage_area_id: 1
+                report_id: 101
+                request_type: evacuation
+                description: Elderly resident cannot leave the house, water is entering.
+                contact_number: '09170000000'
+                number_of_people: 2
+                status: acknowledged
+                status_note: Rescue team dispatched.
+                handled_by: 15
+                created_at: '2026-11-03T09:45:00Z'
+                updated_at: '2026-11-03T09:50:00Z'
+                resolved_at: null
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+# ---------------------------------------------------------- COMPONENTS
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT from `/auth/login` or `/auth/register`, sent as `Authorization Bearer <token>`.
+  parameters:
+    IdPath:
+      name: id
+      in: path
+      required: true
+      description: Numeric id of the resource.
+      schema:
+        type: integer
+        minimum: 1
+    Page:
+      name: page
+      in: query
+      description: Page number, starting at 1.
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    Limit:
+      name: limit
+      in: query
+      description: Items per page.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+  responses:
+    ValidationError:
+      description: The request body or parameters are invalid (400).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            status: 400
+            error: Bad Request
+            message: Validation failed.
+            details:
+              - field: severity
+                issue: must be one of low, moderate, high, severe
+    Unauthorized:
+      description: Missing, invalid or expired token (401).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            status: 401
+            error: Unauthorized
+            message: Authentication token is missing or invalid.
+    Forbidden:
+      description: The user's role or ownership does not allow this action (403).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            status: 403
+            error: Forbidden
+            message: You do not have permission to perform this action.
+    NotFound:
+      description: The resource, or a resource referenced in the request, was not found (404).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            status: 404
+            error: Not Found
+            message: Resource not found.
+    Conflict:
+      description: The request conflicts with the current state of the data, such as a duplicate value, invalid status transition or existing child records (409).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            status: 409
+            error: Conflict
+            message: The request conflicts with the current state of the resource.
+  schemas:
+    Error:
+      type: object
+      required: [status, error, message]
+      properties:
+        status:
+          type: integer
+          description: HTTP status code.
+        error:
+          type: string
+          description: Short HTTP status name.
+        message:
+          type: string
+          description: Human-readable explanation.
+        details:
+          type: array
+          description: Field-level problems, present for validation errors.
+          items:
+            type: object
+            required: [field, issue]
+            properties:
+              field:
+                type: string
+              issue:
+                type: string
+    Role:
+      type: string
+      enum: [commuter, admin]
+    FloodSeverity:
+      type: string
+      description: |
+        `low` ankle-deep or less; `moderate` about knee-deep; `high` waist-deep; `severe` above waist or fast-moving water.
+      enum: [low, moderate, high, severe]
+    FloodLevel:
+      type: string
+      description: |
+        Street-level result. `no_recent_reports` means unknown (not safe). `clear` means recent reports say flooding has cleared.
+        Other values are the highest severity among active reports.
+      enum: [no_recent_reports, clear, low, moderate, high, severe]
+    ReportStatus:
+      type: string
+      description: '`pending` new, `verified` or `rejected` by an admin, `resolved` flooding has cleared.'
+      enum: [pending, verified, rejected, resolved]
+    AdvisoryType:
+      type: string
+      enum: [rain, flood_warning, evacuation, general]
+    AdvisoryLevel:
+      type: string
+      enum: [info, watch, warning, critical]
+    AssistanceType:
+      type: string
+      enum: [rescue, evacuation, medical, supplies, other]
+    AssistanceStatus:
+      type: string
+      enum: [open, acknowledged, in_progress, resolved, cancelled]
+    # ---- Users
+    User:
+      type: object
+      required: [id, name, email, role, created_at]
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        role:
+          $ref: '#/components/schemas/Role'
+        coverage_area_id:
+          type: integer
+          nullable: true
+          description: Home or assigned coverage area.
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+    RegisterRequest:
+      type: object
+      required: [name, email, password]
+      properties:
+        name:
+          type: string
+          minLength: 2
+          maxLength: 100
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 72
+          writeOnly: true
+        coverage_area_id:
+          type: integer
+          minimum: 1
+          nullable: true
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+          writeOnly: true
+    AuthResponse:
+      type: object
+      required: [token, user]
+      properties:
+        token:
+          type: string
+          description: JWT access token.
+        user:
+          $ref: '#/components/schemas/User'
+    UserUpdate:
+      type: object
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          minLength: 2
+          maxLength: 100
+        email:
+          type: string
+          format: email
+        coverage_area_id:
+          type: integer
+          minimum: 1
+          nullable: true
+    UserAdminUpdate:
+      type: object
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          minLength: 2
+          maxLength: 100
+        email:
+          type: string
+          format: email
+        role:
+          $ref: '#/components/schemas/Role'
+        coverage_area_id:
+          type: integer
+          minimum: 1
+          nullable: true
+    # ---- Coverage areas
+    District:
+      type: string
+      description: City council district. `first_district` is the western areas, `second_district` the eastern areas and downtown.
+      enum: [first_district, second_district]
+    CoverageArea:
+      type: object
+      required: [id, name, barangay, city, district, is_coastal_riverfront, is_active, created_at]
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        name:
+          type: string
+        barangay:
+          type: string
+          description: Barangay name from the flood-prone list, e.g. `Carmen` or `Barangay 17`.
+        city:
+          type: string
+        district:
+          $ref: '#/components/schemas/District'
+        is_coastal_riverfront:
+          type: boolean
+          description: True for high-density coastal or riverfront zones exposed to overflowing waterways and high tides.
+        description:
+          type: string
+          nullable: true
+        is_active:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+    CoverageAreaInput:
+      type: object
+      required: [name, barangay, city, district]
+      properties:
+        district:
+          $ref: '#/components/schemas/District'
+        is_coastal_riverfront:
+          type: boolean
+          default: false
+        name:
+          type: string
+          minLength: 2
+          maxLength: 100
+        barangay:
+          type: string
+          minLength: 2
+          maxLength: 100
+        city:
+          type: string
+          minLength: 2
+          maxLength: 100
+        description:
+          type: string
+          maxLength: 500
+          nullable: true
+        is_active:
+          type: boolean
+          default: true
+    # ---- Streets
+    StreetFloodStatus:
+      type: object
+      description: |
+        Computed from reports, never written by clients. Active reports are those with status `pending`, `verified` or `resolved`
+        whose `expires_at` (6 hours after `observed_at`) has not passed. The `level` is the highest severity among active
+        `pending`/`verified` reports. If none remain but at least one active `resolved` report exists, the level is `clear`.
+        Otherwise it is `no_recent_reports`. Recalculated whenever a report is created, edited, verified, rejected, resolved or deleted, and as reports expire.
+      required: [level, active_report_count, verified_report_count, last_updated, computed_at]
+      properties:
+        level:
+          $ref: '#/components/schemas/FloodLevel'
+        active_report_count:
+          type: integer
+          minimum: 0
+        verified_report_count:
+          type: integer
+          minimum: 0
+          description: How many of the active reports are admin-verified.
+        last_updated:
+          type: string
+          format: date-time
+          nullable: true
+          description: Latest `observed_at` or `resolved_at` among reports that contributed. Null when there are none.
+        computed_at:
+          type: string
+          format: date-time
+        note:
+          type: string
+          description: Plain-language caveat. Never states that the street is safe.
+    Street:
+      type: object
+      required: [id, name, coverage_area_id, is_active, flood_status, created_at]
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        name:
+          type: string
+        coverage_area_id:
+          type: integer
+        latitude:
+          type: number
+          format: double
+          minimum: -90
+          maximum: 90
+          nullable: true
+        longitude:
+          type: number
+          format: double
+          minimum: -180
+          maximum: 180
+          nullable: true
+        connected_street_ids:
+          type: array
+          description: Streets that connect to this one, used for bypass suggestions.
+          items:
+            type: integer
+        is_active:
+          type: boolean
+        flood_status:
+          $ref: '#/components/schemas/StreetFloodStatus'
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+    StreetCreate:
+      type: object
+      required: [name, coverage_area_id]
+      properties:
+        name:
+          type: string
+          minLength: 2
+          maxLength: 150
+        coverage_area_id:
+          type: integer
+          minimum: 1
+        latitude:
+          type: number
+          format: double
+          minimum: -90
+          maximum: 90
+        longitude:
+          type: number
+          format: double
+          minimum: -180
+          maximum: 180
+        connected_street_ids:
+          type: array
+          items:
+            type: integer
+            minimum: 1
+        is_active:
+          type: boolean
+          default: true
+    StreetUpdate:
+      type: object
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          minLength: 2
+          maxLength: 150
+        coverage_area_id:
+          type: integer
+          minimum: 1
+        latitude:
+          type: number
+          format: double
+          minimum: -90
+          maximum: 90
+        longitude:
+          type: number
+          format: double
+          minimum: -180
+          maximum: 180
+        connected_street_ids:
+          type: array
+          items:
+            type: integer
+            minimum: 1
+        is_active:
+          type: boolean
+    BypassSuggestion:
+      type: object
+      required: [street_id, name, level, active_report_count, last_updated]
+      properties:
+        street_id:
+          type: integer
+        name:
+          type: string
+        level:
+          $ref: '#/components/schemas/FloodLevel'
+        active_report_count:
+          type: integer
+          minimum: 0
+        last_updated:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the information behind this suggestion was last updated. Null if there are no recent reports.
+        note:
+          type: string
+    BypassSuggestionList:
+      type: object
+      required: [street_id, computed_at, disclaimer, suggestions]
+      properties:
+        street_id:
+          type: integer
+        computed_at:
+          type: string
+          format: date-time
+        disclaimer:
+          type: string
+          description: States that suggestions may be outdated and are not a safety guarantee.
+        suggestions:
+          type: array
+          items:
+            $ref: '#/components/schemas/BypassSuggestion'
+    # ---- Flood reports
+    FloodReport:
+      type: object
+      required: [id, street_id, severity, observed_at, expires_at, is_active, status, created_at, updated_at]
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        street_id:
+          type: integer
+          description: Street this report is about. Required and immutable.
+        reporter_id:
+          type: integer
+          nullable: true
+          description: Owner. Null if the user was deleted.
+        severity:
+          $ref: '#/components/schemas/FloodSeverity'
+        description:
+          type: string
+          nullable: true
+        observed_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+          readOnly: true
+          description: '`observed_at` plus 6 hours. After this the report no longer influences street status.'
+        is_active:
+          type: boolean
+          readOnly: true
+          description: True when not expired and not rejected.
+        status:
+          $ref: '#/components/schemas/ReportStatus'
+        verified_by:
+          type: integer
+          nullable: true
+        verified_at:
+          type: string
+          format: date-time
+          nullable: true
+        verification_reason:
+          type: string
+          nullable: true
+        resolved_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+    FloodReportCreate:
+      type: object
+      required: [street_id, severity]
+      properties:
+        street_id:
+          type: integer
+          minimum: 1
+        severity:
+          $ref: '#/components/schemas/FloodSeverity'
+        description:
+          type: string
+          maxLength: 500
+        observed_at:
+          type: string
+          format: date-time
+          description: Defaults to the server time. Must not be in the future or older than 24 hours.
+    FloodReportUpdate:
+      type: object
+      minProperties: 1
+      properties:
+        severity:
+          $ref: '#/components/schemas/FloodSeverity'
+        description:
+          type: string
+          maxLength: 500
+        observed_at:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [resolved]
+          description: Only `resolved` is accepted here.
+    ReportVerification:
+      type: object
+      required: [decision]
+      properties:
+        decision:
+          type: string
+          enum: [verified, rejected]
+        reason:
+          type: string
+          maxLength: 300
+          description: Required when `decision` is `rejected`.
+    # ---- Advisories
+    Advisory:
+      type: object
+      required: [id, title, message, advisory_type, level, starts_at, expires_at, is_active, created_at, updated_at]
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        title:
+          type: string
+        message:
+          type: string
+        advisory_type:
+          $ref: '#/components/schemas/AdvisoryType'
+        level:
+          $ref: '#/components/schemas/AdvisoryLevel'
+        coverage_area_id:
+          type: integer
+          nullable: true
+          description: Null means city-wide.
+        created_by:
+          type: integer
+          nullable: true
+        starts_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        is_active:
+          type: boolean
+          readOnly: true
+          description: True when `starts_at` <= now < `expires_at`.
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+    AdvisoryCreate:
+      type: object
+      required: [title, message, advisory_type, level, expires_at]
+      properties:
+        title:
+          type: string
+          minLength: 3
+          maxLength: 150
+        message:
+          type: string
+          minLength: 3
+          maxLength: 1000
+        advisory_type:
+          $ref: '#/components/schemas/AdvisoryType'
+        level:
+          $ref: '#/components/schemas/AdvisoryLevel'
+        coverage_area_id:
+          type: integer
+          minimum: 1
+          nullable: true
+          description: Omit or null for a city-wide advisory.
+        starts_at:
+          type: string
+          format: date-time
+          description: Defaults to now.
+        expires_at:
+          type: string
+          format: date-time
+          description: Must be later than `starts_at`.
+    AdvisoryUpdate:
+      type: object
+      minProperties: 1
+      properties:
+        title:
+          type: string
+          minLength: 3
+          maxLength: 150
+        message:
+          type: string
+          minLength: 3
+          maxLength: 1000
+        advisory_type:
+          $ref: '#/components/schemas/AdvisoryType'
+        level:
+          $ref: '#/components/schemas/AdvisoryLevel'
+        coverage_area_id:
+          type: integer
+          minimum: 1
+          nullable: true
+        starts_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+    # ---- Assistance requests
+    AssistanceRequest:
+      type: object
+      required: [id, street_id, request_type, description, contact_number, number_of_people, status, created_at, updated_at]
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        requester_id:
+          type: integer
+          nullable: true
+          description: Owner. Null if the user was deleted.
+        street_id:
+          type: integer
+        coverage_area_id:
+          type: integer
+          readOnly: true
+          description: Copied from the street.
+        report_id:
+          type: integer
+          nullable: true
+          description: Optional related flood report on the same street.
+        request_type:
+          $ref: '#/components/schemas/AssistanceType'
+        description:
+          type: string
+        contact_number:
+          type: string
+        number_of_people:
+          type: integer
+          minimum: 1
+        status:
+          $ref: '#/components/schemas/AssistanceStatus'
+        status_note:
+          type: string
+          nullable: true
+        handled_by:
+          type: integer
+          nullable: true
+          description: Admin who last changed the status.
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+        resolved_at:
+          type: string
+          format: date-time
+          nullable: true
+    AssistanceRequestCreate:
+      type: object
+      required: [street_id, request_type, description, contact_number, number_of_people]
+      properties:
+        street_id:
+          type: integer
+          minimum: 1
+        report_id:
+          type: integer
+          minimum: 1
+          nullable: true
+        request_type:
+          $ref: '#/components/schemas/AssistanceType'
+        description:
+          type: string
+          minLength: 5
+          maxLength: 500
+        contact_number:
+          type: string
+          pattern: '^[0-9+() -]{7,20}$'
+        number_of_people:
+          type: integer
+          minimum: 1
+          maximum: 100
+    AssistanceRequestUpdate:
+      type: object
+      minProperties: 1
+      properties:
+        request_type:
+          $ref: '#/components/schemas/AssistanceType'
+        description:
+          type: string
+          minLength: 5
+          maxLength: 500
+        contact_number:
+          type: string
+          pattern: '^[0-9+() -]{7,20}$'
+        number_of_people:
+          type: integer
+          minimum: 1
+          maximum: 100
+    AssistanceStatusChange:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [acknowledged, in_progress, resolved, cancelled]
+        status_note:
+          type: string
+          maxLength: 300
