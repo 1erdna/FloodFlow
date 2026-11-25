@@ -30,8 +30,8 @@ info:
     
   contact:
     name: MojoGojo - ITCC 14
-  servers:
-    URL: http://localhost:3000/api
+servers:
+  - url: http://localhost:3000/api
 tags:
   - name: Auth
     description: Registration and login. Owner - Mark Dichos.
