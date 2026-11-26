@@ -1,7 +1,8 @@
 const express = require("express");
 const swaggerUi = require("swagger-ui-express");
 const YAML = require("yamljs");
-const swaggerDocument = YAML.load("./ITCC14API_MojoGojo_Final.yaml");
+const path = require("path");
+const swaggerDocument = YAML.load(path.join(__dirname, "docs", "ITCC14API_MojoGojo_Final.yaml"));
 
 const app = express();
 const port = 3000;
