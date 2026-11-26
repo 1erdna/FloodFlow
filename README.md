@@ -34,6 +34,19 @@ Open [Swagger UI](http://localhost:3000/api) in your browser.
 
 ## Database setup
 
+### Windows automatic setup (recommended)
+
+From the repository folder in PowerShell, preferably running as administrator:
+
+```powershell
+git pull --ff-only
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup-mongodb.ps1 -InstallCompass
+```
+
+The script checks the local MongoDB connection, installs missing tools using Windows Package Manager, starts the default MongoDB service if needed, and runs `database/init-safe.js`. The safe script creates missing collections and indexes and does not drop existing collections or replace existing validators. Omit `-InstallCompass` if you do not need the GUI. Installer prompts may require approval. The execution policy option applies only to this PowerShell process.
+
+### Manual setup (destructive reset)
+
 Install MongoDB and mongosh. Start a local MongoDB instance before running:
 
 ```bash
