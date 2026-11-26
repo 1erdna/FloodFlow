@@ -26,6 +26,7 @@ if (-not $shell) {
 }
 $uri = 'mongodb://127.0.0.1:27017/?serverSelectionTimeoutMS=3000'
 function Test-Mongo {
+    $ErrorActionPreference = 'Continue'
     & $shell $uri --quiet --eval 'db.adminCommand({ping:1}).ok' 2>$null | Out-Null
     return ($LASTEXITCODE -eq 0)
 }
