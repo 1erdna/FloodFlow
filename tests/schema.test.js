@@ -1,0 +1,21 @@
+// Isolated tests of the MongoDB schema declarations; no database connection required.
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+const schemas = {};
+const indexes = {};
+const mock = { getCollectionNames: () => Object.keys(schemas), createCollection(name, opts) { schemas[name] = opts.validator.$jsonSchema; indexes[name] = []; mock[name] = { createIndex: (keys, opts) => indexes[name].push({keys, opts}), countDocuments: () => 0 }; } };
+vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../database/init-safe.js'), 'utf8'), {db: {getSiblingDB: () => mock}, print: () => {}, printjson: () => {}});
+const schema = n => schemas[n];
+const prop = (n, p) => schema(n).properties[p];
+test('UT-01: unique email index', () => assert.ok(indexes.users.some(i => i.keys.email === 1 && i.opts?.unique === true)));
+test('UT-02: user role enumeration', () => assert.equal(JSON.stringify(prop('users','role').enum), JSON.stringify(['commuter','admin'])));
+test('UT-03: coverage district enumeration', () => assert.equal(JSON.stringify(prop('coverageareas','district').enum), JSON.stringify(['first_district','second_district'])));
+test('UT-04: street requires coverage reference', () => { assert.ok(schema('streets').required.includes('coverage_area_id')); assert.equal(prop('streets','coverage_area_id').bsonType,'objectId'); });
+test('UT-05: street coordinates bounded', () => { assert.equal(prop('streets','latitude').minimum,-90); assert.equal(prop('streets','latitude').maximum,90); assert.equal(prop('streets','longitude').minimum,-180); assert.equal(prop('streets','longitude').maximum,180); });
+test('UT-06: report severity enumeration', () => assert.equal(JSON.stringify(prop('floodreports','severity').enum),JSON.stringify(['low','moderate','high','severe'])));
+test('UT-07: report status enumeration', () => assert.equal(JSON.stringify(prop('floodreports','status').enum),JSON.stringify(['pending','verified','rejected','resolved'])));
+test('UT-08: advisory level enumeration', () => assert.equal(JSON.stringify(prop('advisories','level').enum),JSON.stringify(['info','watch','warning','critical'])));
+test('UT-09: assistance people range', () => { const p = prop('assistancerequests','number_of_people'); assert.equal(p.bsonType,'int'); assert.equal(p.minimum,1); assert.equal(p.maximum,100); });
